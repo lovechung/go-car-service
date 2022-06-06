@@ -20,4 +20,4 @@ WORKDIR /app
 EXPOSE 9000
 VOLUME /data/conf
 
-CMD ["./car-service", "-conf", "/data/conf"]
+CMD ["sh", "-c", "./car-service -env $ENV -config_type $CONFIG_TYPE -config_host $CONFIG_HOST -config_token $CONFIG_TOKEN"]
