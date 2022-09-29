@@ -5,9 +5,10 @@ import (
 	"car-service/internal/conf"
 	"car-service/internal/data/ent"
 	"context"
+	"database/sql"
 	"entgo.io/ent/dialect"
-	"entgo.io/ent/dialect/sql"
-	"fmt"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/XSAM/otelsql"
 	"github.com/go-kratos/kratos/contrib/registry/consul/v2"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/go-kratos/kratos/v2/middleware/recovery"
@@ -20,9 +21,7 @@ import (
 	"github.com/lovechung/api-base/api/user"
 	"github.com/rueian/rueidis"
 	"github.com/rueian/rueidis/rueidiscompat"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
 )
 
 var ProviderSet = wire.NewSet(
@@ -90,33 +89,42 @@ func NewData(db *ent.Client, rds rueidis.Client, uc user.UserClient, logger log.
 func NewDB(conf *conf.Data, logger log.Logger) *ent.Client {
 	thisLog := log.NewHelper(logger)
 
-	drv, err := sql.Open(
+	// 注册sql tracing
+	driverName, err := otelsql.Register(
 		conf.Database.Driver,
-		conf.Database.Source,
+		otelsql.WithAttributes(semconv.DBSystemMariaDB),
+		otelsql.WithSpanOptions(
+			otelsql.SpanOptions{
+				DisableErrSkip:       true,
+				OmitConnectorConnect: true,
+				OmitConnResetSession: true,
+				OmitConnPrepare:      true,
+				OmitRows:             true,
+			}),
 	)
-	// 打印sql日志
-	sqlDrv := dialect.DebugWithContext(drv, func(ctx context.Context, i ...interface{}) {
-		thisLog.WithContext(ctx).Debug(i...)
-		// 开启db trace
-		tracer := otel.Tracer("entgo.io/ent")
-		_, span := tracer.Start(ctx,
-			"query",
-			trace.WithAttributes(
-				attribute.String("sql", fmt.Sprint(i...)),
-			),
-		)
-		defer span.End()
-	})
-	db := ent.NewClient(ent.Driver(sqlDrv))
+	if err != nil {
+		thisLog.Fatalf("sql tracing注册失败: %v", err)
+	}
 
+	// 连接数据库
+	db, err := sql.Open(driverName, conf.Database.Source)
 	if err != nil {
 		thisLog.Fatalf("数据库连接失败: %v", err)
 	}
+
+	// 初始化ent客户端
+	drv := entsql.OpenDB(conf.Database.Driver, db)
+	// 配置sql日志打印
+	sqlDrv := dialect.DebugWithContext(drv, func(ctx context.Context, i ...interface{}) {
+		thisLog.WithContext(ctx).Debug(i...)
+	})
+	client := ent.NewClient(ent.Driver(sqlDrv))
+
 	// 运行自动创建表
 	//if err := db.Schema.Create(context.Background(), migrate.WithForeignKeys(false)); err != nil {
 	//	thisLog.Fatalf("创建表失败: %v", err)
 	//}
-	return db
+	return client
 }
 
 func NewRedis(conf *conf.Data, logger log.Logger) rueidis.Client {
@@ -163,10 +171,10 @@ func NewDiscovery(conf *conf.Registry) registry.Discovery {
 	return r
 }
 
-func NewUserServiceClient(r registry.Discovery) user.UserClient {
+func NewUserServiceClient(conf *conf.Server, r registry.Discovery) user.UserClient {
 	conn, err := grpc.DialInsecure(
 		context.Background(),
-		grpc.WithEndpoint("discovery:///user-service"),
+		grpc.WithEndpoint("discovery:///user-service"+"-"+conf.Profile),
 		grpc.WithDiscovery(r),
 		grpc.WithMiddleware(
 			recovery.Recovery(),

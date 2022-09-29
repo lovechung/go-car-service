@@ -22,4 +22,4 @@ WORKDIR /app
 
 EXPOSE 9000
 
-CMD ["sh", "-c", "./car-service -env $ENV -config_type $CONFIG_TYPE -config_host $CONFIG_HOST -config_token $CONFIG_TOKEN"]
+CMD ["sh", "-c", "./car-service -config_type $CONFIG_TYPE -config_host $CONFIG_HOST -config_token $CONFIG_TOKEN"]
